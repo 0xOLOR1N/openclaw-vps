@@ -229,6 +229,26 @@
     "home-manager_2": {
       "inputs": {
         "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1769978395,
+        "narHash": "sha256-gj1yP3spUb1vGtaF5qPhshd2j0cg4xf51pklDsIm19Q=",
+        "owner": "nix-community",
+        "repo": "home-manager",
+        "rev": "984708c34d3495a518e6ab6b8633469bbca2f77a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "home-manager",
+        "type": "github"
+      }
+    },
+    "home-manager_3": {
+      "inputs": {
+        "nixpkgs": [
           "nix-openclaw",
           "nixpkgs"
         ]
@@ -250,18 +270,18 @@
     "nix-openclaw": {
       "inputs": {
         "flake-utils": "flake-utils",
-        "home-manager": "home-manager_2",
+        "home-manager": "home-manager_3",
         "nix-steipete-tools": "nix-steipete-tools",
         "nixpkgs": [
           "nixpkgs"
         ]
       },
       "locked": {
-        "lastModified": 1769816418,
-        "narHash": "sha256-vdvN3zeO4SlpJ0ZY2SfrNpMWM5VLOtu7KtXNS8RV3Y4=",
+        "lastModified": 1770153872,
+        "narHash": "sha256-7C1oJYGraUl6MVEFxi0bCZA2IPJwB1D65QbFj1v6alg=",
         "owner": "openclaw",
         "repo": "nix-openclaw",
-        "rev": "59d27fcbad100e55b3db51dd9b39b7102a390f84",
+        "rev": "d03a90a0e640664d0c0de0a1efa1b2d492a8b5fa",
         "type": "github"
       },
       "original": {
@@ -275,11 +295,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1769810114,
-        "narHash": "sha256-MlQ4G7MIkFDIvekIiucJEZP0FmeyOpwadI1dCq0EmSk=",
+        "lastModified": 1770153405,
+        "narHash": "sha256-MUtqu/euqZxuCR2zmWC/vN8dZfK9CY40IwwqaZyh/1I=",
         "owner": "openclaw",
         "repo": "nix-steipete-tools",
-        "rev": "76188dc559493e752f23a53d4563b77dea7c0428",
+        "rev": "5735675f95ea866815eefb4cc87d82e57c792f58",
         "type": "github"
       },
       "original": {
@@ -364,6 +384,7 @@
         "agenix-rekey": "agenix-rekey",
         "devshell": "devshell_2",
         "flake-parts": "flake-parts_2",
+        "home-manager": "home-manager_2",
         "nix-openclaw": "nix-openclaw",
         "nixpkgs": "nixpkgs_2"
       }

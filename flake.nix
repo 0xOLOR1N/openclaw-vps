@@ -20,6 +20,10 @@
       url = "github:openclaw/nix-openclaw";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -31,6 +35,7 @@
       agenix,
       agenix-rekey,
       nix-openclaw,
+      home-manager,
       ...
     }:
     flake-parts.lib.mkFlake { inherit inputs; } {
@@ -50,10 +55,18 @@
         # NixOS configurations (used by agenix-rekey)
         nixosConfigurations.openclaw-vps = nixpkgs.lib.nixosSystem {
           system = "x86_64-linux";
-          specialArgs = { inherit agenix agenix-rekey nix-openclaw; };
+          specialArgs = {
+            inherit
+              agenix
+              agenix-rekey
+              nix-openclaw
+              home-manager
+              ;
+          };
           modules = [
             agenix.nixosModules.default
             agenix-rekey.nixosModules.default
+            home-manager.nixosModules.home-manager
             ./nix/hosts/openclaw-vps.nix
           ];
         };
@@ -62,7 +75,14 @@
         colmena = {
           meta = {
             nixpkgs = import nixpkgs { system = "x86_64-linux"; };
-            specialArgs = { inherit agenix agenix-rekey nix-openclaw; };
+            specialArgs = {
+              inherit
+                agenix
+                agenix-rekey
+                nix-openclaw
+                home-manager
+                ;
+            };
           };
         }
         // (import ./nix/colmena.nix);
@@ -122,19 +142,19 @@
               }
               {
                 name = "logs";
-                help = "View openclaw service logs";
+                help = "View openclaw service logs (user service)";
                 command = ''
                   IP=$(terraform -chdir=terraform output -raw ipv4)
-                  ssh root@$IP "journalctl -u openclaw -f"
+                  ssh root@$IP "sudo -u openclaw XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -u openclaw-gateway -f"
                 '';
                 category = "remote";
               }
               {
                 name = "status";
-                help = "Check openclaw service status";
+                help = "Check openclaw service status (user service)";
                 command = ''
                   IP=$(terraform -chdir=terraform output -raw ipv4)
-                  ssh root@$IP "systemctl status openclaw"
+                  ssh -t root@$IP "sudo -u openclaw XDG_RUNTIME_DIR=/run/user/1000 systemctl --user status openclaw-gateway"
                 '';
                 category = "remote";
               }
@@ -144,6 +164,15 @@
                 command = ''
                   IP=$(terraform -chdir=terraform output -raw ipv4)
                   ssh root@$IP "tail -f /tmp/nixos-infect.log"
+                '';
+                category = "remote";
+              }
+              {
+                name = "hook-logs";
+                help = "View workspace:write hook logs";
+                command = ''
+                  IP=$(terraform -chdir=terraform output -raw ipv4)
+                  ssh root@$IP "tail -f /var/lib/openclaw/workspace-writes.log"
                 '';
                 category = "remote";
               }
@@ -171,6 +200,7 @@
                 command = "terraform -chdir=terraform destroy";
                 category = "terraform";
               }
+
             ];
 
             devshell.startup.load-secrets.text = ''
@@ -192,6 +222,9 @@
               openssh
               git
               jq
+              # TODO: remove following deps once https://github.com/openclaw/openclaw/issues/8255 fixed
+              nodejs_22
+              nodePackages.pnpm
             ]);
           };
         };

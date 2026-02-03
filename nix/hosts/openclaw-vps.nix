@@ -3,12 +3,10 @@
   nix-openclaw,
   ...
 }:
-
 {
   imports = [
     ./hardware-configuration.nix
     ../modules/common.nix
-    (import ../modules/openclaw.nix { inherit nix-openclaw; })
   ];
 
   networking.hostName = "openclaw";
@@ -47,20 +45,23 @@
     };
   };
 
-  services.openclaw = {
-    enable = true;
-    port = 18789;
-    logLevel = "info";
-    initialStateDir = ../../state/.openclaw;
-    telegram = {
-      enable = true;
-      allowFromFile = config.age.secrets.telegram-user-id.path;
-    };
-    environmentFiles = [
-      config.age.secrets.anthropic-api.path
-      config.age.secrets.telegram-creds.path
-      config.age.secrets.gateway-token.path
-    ];
+  users.groups.openclaw = { };
+
+  users.users.openclaw = {
+    isNormalUser = true;
+    group = "openclaw";
+    home = "/var/lib/openclaw";
+    createHome = true;
+    uid = 1000;
+    linger = true;
+  };
+
+  home-manager = {
+    useGlobalPkgs = true;
+    useUserPackages = true;
+    extraSpecialArgs = { inherit nix-openclaw; };
+    backupFileExtension = "bak";
+    users.openclaw = import ../home/openclaw.nix;
   };
 
   users.users.root.openssh.authorizedKeys.keyFiles = [

@@ -1,0 +1,144 @@
+diff -ruN '--exclude=.git' openclaw-src/src/agents/pi-tools.ts openclaw-patched/src/agents/pi-tools.ts
+--- openclaw-src/src/agents/pi-tools.ts	2026-02-03 21:32:24.108738904 +0100
++++ openclaw-patched/src/agents/pi-tools.ts	2026-02-03 21:43:26.703919911 +0100
+@@ -24,6 +24,7 @@
+ import { createOpenClawTools } from "./openclaw-tools.js";
+ import { wrapToolWithAbortSignal } from "./pi-tools.abort.js";
+ import { wrapToolWithBeforeToolCallHook } from "./pi-tools.before-tool-call.js";
++import { wrapToolWithWorkspaceWriteHook } from "./wrap-tool-with-workspace-write-hook.js";
+ import {
+   filterToolsByPolicy,
+   isToolAllowedByPolicies,
+@@ -250,17 +251,25 @@
+       if (sandboxRoot) {
+         return [];
+       }
+-      // Wrap with param normalization for Claude Code compatibility
+       return [
+-        wrapToolParamNormalization(createWriteTool(workspaceRoot), CLAUDE_PARAM_GROUPS.write),
++        wrapToolWithWorkspaceWriteHook(
++          wrapToolParamNormalization(createWriteTool(workspaceRoot), CLAUDE_PARAM_GROUPS.write),
++          { operation: "write", toolName: "write", workspaceRoot },
++          { sessionKey: options?.sessionKey },
++        ),
+       ];
+     }
+     if (tool.name === "edit") {
+       if (sandboxRoot) {
+         return [];
+       }
+-      // Wrap with param normalization for Claude Code compatibility
+-      return [wrapToolParamNormalization(createEditTool(workspaceRoot), CLAUDE_PARAM_GROUPS.edit)];
++      return [
++        wrapToolWithWorkspaceWriteHook(
++          wrapToolParamNormalization(createEditTool(workspaceRoot), CLAUDE_PARAM_GROUPS.edit),
++          { operation: "edit", toolName: "edit", workspaceRoot },
++          { sessionKey: options?.sessionKey },
++        ),
++      ];
+     }
+     return [tool];
+   });
+diff -ruN '--exclude=.git' openclaw-src/src/agents/wrap-tool-with-workspace-write-hook.ts openclaw-patched/src/agents/wrap-tool-with-workspace-write-hook.ts
+--- openclaw-src/src/agents/wrap-tool-with-workspace-write-hook.ts	1970-01-01 01:00:00.000000000 +0100
++++ openclaw-patched/src/agents/wrap-tool-with-workspace-write-hook.ts	2026-02-03 21:42:49.110860837 +0100
+@@ -0,0 +1,87 @@
++/**
++ * Workspace write hook wrapper
++ *
++ * Wraps write/edit tools to emit `workspace:write` internal hook events
++ * after successful file operations. This enables users to trigger custom
++ * actions like auto-commit, encryption, or sync on file writes.
++ */
++
++import { createInternalHookEvent, triggerInternalHook } from "../hooks/internal-hooks.js";
++import type { AnyAgentTool } from "./pi-tools.types.js";
++
++type WorkspaceWriteHookContext = {
++  sessionKey?: string;
++};
++
++type WorkspaceWriteHookOptions = {
++  operation: "write" | "edit";
++  workspaceRoot: string;
++  toolName: string;
++};
++
++/**
++ * Wraps a tool to emit `workspace:write` internal hook after successful execution.
++ *
++ * - Does not throw if hook dispatch fails (hooks must not break file writing)
++ * - Supports both `write` and `edit` tools
++ * - Extracts file paths from various input shapes
++ */
++export function wrapToolWithWorkspaceWriteHook(
++  tool: AnyAgentTool,
++  opts: WorkspaceWriteHookOptions,
++  ctx?: WorkspaceWriteHookContext,
++): AnyAgentTool {
++  const originalExecute = tool.execute;
++  if (!originalExecute) {
++    return tool;
++  }
++
++  return {
++    ...tool,
++    execute: async (toolCallId, params, signal, onUpdate) => {
++      // Execute the original tool first
++      const result = await originalExecute(toolCallId, params, signal, onUpdate);
++
++      // Only trigger hook if we have a session key
++      const sessionKey = ctx?.sessionKey;
++      if (!sessionKey) {
++        return result;
++      }
++
++      // Extract file paths from the tool input
++      const paths = extractPathsFromInput(params);
++      if (paths.length === 0) {
++        return result;
++      }
++
++      // Trigger the workspace:write hook (fire-and-forget, don't block on errors)
++      const event = createInternalHookEvent("workspace", "write", sessionKey, {
++        operation: opts.operation,
++        tool: opts.toolName,
++        paths,
++        workspaceRoot: opts.workspaceRoot,
++      });
++
++      triggerInternalHook(event).catch(() => {
++        // Intentionally swallow errors: hooks must not break file writing
++      });
++
++      return result;
++    },
++  };
++}
++
++function extractPathsFromInput(input: unknown): string[] {
++  if (!input || typeof input !== "object") return [];
++  const obj = input as Record<string, unknown>;
++
++  // Handle common parameter names: filePath, file_path, path
++  const direct =
++    (typeof obj.filePath === "string" && obj.filePath) ||
++    (typeof obj.file_path === "string" && obj.file_path) ||
++    (typeof obj.path === "string" && obj.path);
++
++  if (direct) return [direct];
++
++  return [];
++}
+diff -ruN '--exclude=.git' openclaw-src/src/hooks/internal-hooks.ts openclaw-patched/src/hooks/internal-hooks.ts
+--- openclaw-src/src/hooks/internal-hooks.ts	2026-02-03 21:32:24.182261166 +0100
++++ openclaw-patched/src/hooks/internal-hooks.ts	2026-02-03 21:43:03.042500613 +0100
+@@ -8,7 +8,7 @@
+ import type { WorkspaceBootstrapFile } from "../agents/workspace.js";
+ import type { OpenClawConfig } from "../config/config.js";
+ 
+-export type InternalHookEventType = "command" | "session" | "agent" | "gateway";
++export type InternalHookEventType = "command" | "session" | "agent" | "gateway" | "workspace";
+ 
+ export type AgentBootstrapHookContext = {
+   workspaceDir: string;

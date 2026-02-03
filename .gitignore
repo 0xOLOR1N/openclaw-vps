@@ -7,7 +7,6 @@ terraform/ip.txt
 
 # Editor
 .direnv/
-.envrc
 *.swp
 *~
 
