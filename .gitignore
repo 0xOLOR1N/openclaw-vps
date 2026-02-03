@@ -1,0 +1,23 @@
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/.terraform.lock.hcl
+terraform/ip.txt
+
+# Editor
+.direnv/
+.envrc
+*.swp
+*~
+
+# Nix
+result
+result-*
+
+# SAFE TO COMMIT:
+# - secrets/*.age (encrypted with age)
+# - identities/*.txt (TPM-bound, useless without your hardware)
+# - secrets/ssh-key.pub (public key)
+.openclaw
+.sisyphus
