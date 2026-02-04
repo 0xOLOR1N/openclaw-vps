@@ -1,25 +1,70 @@
-diff -ruN '--exclude=.git' openclaw-src/src/agents/pi-tools.ts openclaw-patched/src/agents/pi-tools.ts
---- openclaw-src/src/agents/pi-tools.ts	2026-02-03 21:32:24.108738904 +0100
-+++ openclaw-patched/src/agents/pi-tools.ts	2026-02-03 21:43:26.703919911 +0100
-@@ -24,6 +24,7 @@
- import { createOpenClawTools } from "./openclaw-tools.js";
- import { wrapToolWithAbortSignal } from "./pi-tools.abort.js";
- import { wrapToolWithBeforeToolCallHook } from "./pi-tools.before-tool-call.js";
-+import { wrapToolWithWorkspaceWriteHook } from "./wrap-tool-with-workspace-write-hook.js";
- import {
-   filterToolsByPolicy,
-   isToolAllowedByPolicies,
-@@ -250,17 +251,25 @@
+diff --git a/src/agents/pi-tools.ts b/src/agents/pi-tools.ts
+index 277c30eb6..64112811f 100644
+--- a/src/agents/pi-tools.ts
++++ b/src/agents/pi-tools.ts
+@@ -51,6 +51,7 @@ import {
+   resolveToolProfilePolicy,
+   stripPluginOnlyAllowlist,
+ } from "./tool-policy.js";
++import { executePostWriteHooks } from "../workspace/post-write-hooks.js";
+ 
+ function isOpenAIProvider(provider?: string) {
+   const normalized = provider?.trim().toLowerCase();
+@@ -85,6 +86,42 @@ function isApplyPatchAllowedForModel(params: {
+   });
+ }
+ 
++function wrapToolWithPostWriteHook(
++  tool: AnyAgentTool,
++  operation: "write" | "edit",
++  workspaceRoot: string,
++  config: OpenClawConfig | undefined,
++): AnyAgentTool {
++  const originalExecute = tool.execute;
++  if (!originalExecute) {
++    return tool;
++  }
++
++  return {
++    ...tool,
++    execute: async (toolCallId, params, signal, onUpdate) => {
++      const result = await originalExecute(toolCallId, params, signal, onUpdate);
++
++      const filePath =
++        (params as Record<string, unknown>)?.filePath ??
++        (params as Record<string, unknown>)?.file_path ??
++        (params as Record<string, unknown>)?.path;
++
++      if (typeof filePath === "string") {
++        executePostWriteHooks(config, {
++          filePath,
++          operation,
++          workspaceRoot,
++        }).catch(() => {
++          // Intentionally swallow - hooks must not break file writing
++        });
++      }
++
++      return result;
++    },
++  };
++}
++
+ function resolveExecConfig(cfg: OpenClawConfig | undefined) {
+   const globalExec = cfg?.tools?.exec;
+   return {
+@@ -250,17 +287,27 @@ export function createOpenClawCodingTools(options?: {
        if (sandboxRoot) {
          return [];
        }
 -      // Wrap with param normalization for Claude Code compatibility
        return [
 -        wrapToolParamNormalization(createWriteTool(workspaceRoot), CLAUDE_PARAM_GROUPS.write),
-+        wrapToolWithWorkspaceWriteHook(
++        wrapToolWithPostWriteHook(
 +          wrapToolParamNormalization(createWriteTool(workspaceRoot), CLAUDE_PARAM_GROUPS.write),
-+          { operation: "write", toolName: "write", workspaceRoot },
-+          { sessionKey: options?.sessionKey },
++          "write",
++          workspaceRoot,
++          options?.config,
 +        ),
        ];
      }
@@ -30,115 +75,194 @@ diff -ruN '--exclude=.git' openclaw-src/src/agents/pi-tools.ts openclaw-patched/
 -      // Wrap with param normalization for Claude Code compatibility
 -      return [wrapToolParamNormalization(createEditTool(workspaceRoot), CLAUDE_PARAM_GROUPS.edit)];
 +      return [
-+        wrapToolWithWorkspaceWriteHook(
++        wrapToolWithPostWriteHook(
 +          wrapToolParamNormalization(createEditTool(workspaceRoot), CLAUDE_PARAM_GROUPS.edit),
-+          { operation: "edit", toolName: "edit", workspaceRoot },
-+          { sessionKey: options?.sessionKey },
++          "edit",
++          workspaceRoot,
++          options?.config,
 +        ),
 +      ];
      }
      return [tool];
    });
-diff -ruN '--exclude=.git' openclaw-src/src/agents/wrap-tool-with-workspace-write-hook.ts openclaw-patched/src/agents/wrap-tool-with-workspace-write-hook.ts
---- openclaw-src/src/agents/wrap-tool-with-workspace-write-hook.ts	1970-01-01 01:00:00.000000000 +0100
-+++ openclaw-patched/src/agents/wrap-tool-with-workspace-write-hook.ts	2026-02-03 21:42:49.110860837 +0100
-@@ -0,0 +1,87 @@
+diff --git a/src/config/types.openclaw.ts b/src/config/types.openclaw.ts
+index f2adac8d7..a9e2fdcb6 100644
+--- a/src/config/types.openclaw.ts
++++ b/src/config/types.openclaw.ts
+@@ -24,6 +24,7 @@ import type { NodeHostConfig } from "./types.node-host.js";
+ import type { PluginsConfig } from "./types.plugins.js";
+ import type { SkillsConfig } from "./types.skills.js";
+ import type { ToolsConfig } from "./types.tools.js";
++import type { WorkspaceConfig } from "./types.workspace.js";
+ 
+ export type OpenClawConfig = {
+   meta?: {
+@@ -97,6 +98,7 @@ export type OpenClawConfig = {
+   talk?: TalkConfig;
+   gateway?: GatewayConfig;
+   memory?: MemoryConfig;
++  workspace?: WorkspaceConfig;
+ };
+ 
+ export type ConfigValidationIssue = {
+diff --git a/src/config/types.ts b/src/config/types.ts
+index d14f1178e..769e91ac9 100644
+--- a/src/config/types.ts
++++ b/src/config/types.ts
+@@ -29,3 +29,4 @@ export * from "./types.tts.js";
+ export * from "./types.tools.js";
+ export * from "./types.whatsapp.js";
+ export * from "./types.memory.js";
++export * from "./types.workspace.js";
+diff --git a/src/config/types.workspace.ts b/src/config/types.workspace.ts
+new file mode 100644
+index 000000000..2fac74c1c
+--- /dev/null
++++ b/src/config/types.workspace.ts
+@@ -0,0 +1,21 @@
 +/**
-+ * Workspace write hook wrapper
-+ *
-+ * Wraps write/edit tools to emit `workspace:write` internal hook events
-+ * after successful file operations. This enables users to trigger custom
-+ * actions like auto-commit, encryption, or sync on file writes.
++ * Workspace configuration types
 + */
 +
-+import { createInternalHookEvent, triggerInternalHook } from "../hooks/internal-hooks.js";
-+import type { AnyAgentTool } from "./pi-tools.types.js";
-+
-+type WorkspaceWriteHookContext = {
-+  sessionKey?: string;
++export type WorkspacePostWriteHook = {
++  /** Shell command to execute */
++  command: string;
++  /** Arguments to pass (supports ${filePath}, ${operation}, ${workspaceRoot} interpolation) */
++  args?: string[];
++  /** Timeout in milliseconds (default: 30000) */
++  timeout?: number;
 +};
 +
-+type WorkspaceWriteHookOptions = {
++export type WorkspaceHooksConfig = {
++  /** Hooks to run after file write/edit operations */
++  postWrite?: WorkspacePostWriteHook[];
++};
++
++export type WorkspaceConfig = {
++  hooks?: WorkspaceHooksConfig;
++};
+diff --git a/src/config/zod-schema.ts b/src/config/zod-schema.ts
+index cbab23ef6..cf62086ee 100644
+--- a/src/config/zod-schema.ts
++++ b/src/config/zod-schema.ts
+@@ -4,6 +4,7 @@ import { AgentsSchema, AudioSchema, BindingsSchema, BroadcastSchema } from "./zo
+ import { ApprovalsSchema } from "./zod-schema.approvals.js";
+ import { HexColorSchema, ModelsConfigSchema } from "./zod-schema.core.js";
+ import { HookMappingSchema, HooksGmailSchema, InternalHooksSchema } from "./zod-schema.hooks.js";
++import { WorkspaceConfigSchema } from "./zod-schema.workspace.js";
+ import { ChannelsSchema } from "./zod-schema.providers.js";
+ import {
+   CommandsSchema,
+@@ -589,6 +590,7 @@ export const OpenClawSchema = z
+       })
+       .strict()
+       .optional(),
++    workspace: WorkspaceConfigSchema,
+   })
+   .strict()
+   .superRefine((cfg, ctx) => {
+diff --git a/src/config/zod-schema.workspace.ts b/src/config/zod-schema.workspace.ts
+new file mode 100644
+index 000000000..c75a84773
+--- /dev/null
++++ b/src/config/zod-schema.workspace.ts
+@@ -0,0 +1,23 @@
++import { z } from "zod";
++
++export const WorkspacePostWriteHookSchema = z
++  .object({
++    command: z.string(),
++    args: z.array(z.string()).optional(),
++    timeout: z.number().int().positive().optional(),
++  })
++  .strict();
++
++export const WorkspaceHooksConfigSchema = z
++  .object({
++    postWrite: z.array(WorkspacePostWriteHookSchema).optional(),
++  })
++  .strict()
++  .optional();
++
++export const WorkspaceConfigSchema = z
++  .object({
++    hooks: WorkspaceHooksConfigSchema,
++  })
++  .strict()
++  .optional();
+diff --git a/src/workspace/post-write-hooks.ts b/src/workspace/post-write-hooks.ts
+new file mode 100644
+index 000000000..de7d95599
+--- /dev/null
++++ b/src/workspace/post-write-hooks.ts
+@@ -0,0 +1,70 @@
++import { spawn } from "node:child_process";
++import type { OpenClawConfig } from "../config/config.js";
++
++export type PostWriteContext = {
++  filePath: string;
 +  operation: "write" | "edit";
 +  workspaceRoot: string;
-+  toolName: string;
 +};
 +
-+/**
-+ * Wraps a tool to emit `workspace:write` internal hook after successful execution.
-+ *
-+ * - Does not throw if hook dispatch fails (hooks must not break file writing)
-+ * - Supports both `write` and `edit` tools
-+ * - Extracts file paths from various input shapes
-+ */
-+export function wrapToolWithWorkspaceWriteHook(
-+  tool: AnyAgentTool,
-+  opts: WorkspaceWriteHookOptions,
-+  ctx?: WorkspaceWriteHookContext,
-+): AnyAgentTool {
-+  const originalExecute = tool.execute;
-+  if (!originalExecute) {
-+    return tool;
++const DEFAULT_TIMEOUT_MS = 30000;
++
++function interpolateArg(arg: string, context: PostWriteContext): string {
++  return arg
++    .replace(/\$\{filePath\}/g, context.filePath)
++    .replace(/\$\{operation\}/g, context.operation)
++    .replace(/\$\{workspaceRoot\}/g, context.workspaceRoot);
++}
++
++async function executeHook(
++  command: string,
++  args: string[],
++  timeout: number,
++  context: PostWriteContext,
++): Promise<void> {
++  const interpolatedArgs = args.map((arg) => interpolateArg(arg, context));
++
++  return new Promise((resolve) => {
++    const child = spawn(command, interpolatedArgs, {
++      cwd: context.workspaceRoot,
++      stdio: "ignore",
++      timeout,
++    });
++
++    child.on("error", (err) => {
++      console.error(`[workspace:postWrite] Hook error: ${err.message}`);
++      resolve();
++    });
++
++    child.on("close", (code) => {
++      if (code !== 0 && code !== null) {
++        console.error(`[workspace:postWrite] Hook exited with code ${code}`);
++      }
++      resolve();
++    });
++  });
++}
++
++export async function executePostWriteHooks(
++  config: OpenClawConfig | undefined,
++  context: PostWriteContext,
++): Promise<void> {
++  const hooks = config?.workspace?.hooks?.postWrite;
++  if (!hooks || hooks.length === 0) {
++    return;
 +  }
 +
-+  return {
-+    ...tool,
-+    execute: async (toolCallId, params, signal, onUpdate) => {
-+      // Execute the original tool first
-+      const result = await originalExecute(toolCallId, params, signal, onUpdate);
++  for (const hook of hooks) {
++    const timeout = hook.timeout ?? DEFAULT_TIMEOUT_MS;
++    const args = hook.args ?? [];
 +
-+      // Only trigger hook if we have a session key
-+      const sessionKey = ctx?.sessionKey;
-+      if (!sessionKey) {
-+        return result;
-+      }
-+
-+      // Extract file paths from the tool input
-+      const paths = extractPathsFromInput(params);
-+      if (paths.length === 0) {
-+        return result;
-+      }
-+
-+      // Trigger the workspace:write hook (fire-and-forget, don't block on errors)
-+      const event = createInternalHookEvent("workspace", "write", sessionKey, {
-+        operation: opts.operation,
-+        tool: opts.toolName,
-+        paths,
-+        workspaceRoot: opts.workspaceRoot,
-+      });
-+
-+      triggerInternalHook(event).catch(() => {
-+        // Intentionally swallow errors: hooks must not break file writing
-+      });
-+
-+      return result;
-+    },
-+  };
++    try {
++      await executeHook(hook.command, args, timeout, context);
++    } catch (err) {
++      console.error(
++        `[workspace:postWrite] Unexpected error:`,
++        err instanceof Error ? err.message : String(err),
++      );
++    }
++  }
 +}
-+
-+function extractPathsFromInput(input: unknown): string[] {
-+  if (!input || typeof input !== "object") return [];
-+  const obj = input as Record<string, unknown>;
-+
-+  // Handle common parameter names: filePath, file_path, path
-+  const direct =
-+    (typeof obj.filePath === "string" && obj.filePath) ||
-+    (typeof obj.file_path === "string" && obj.file_path) ||
-+    (typeof obj.path === "string" && obj.path);
-+
-+  if (direct) return [direct];
-+
-+  return [];
-+}
-diff -ruN '--exclude=.git' openclaw-src/src/hooks/internal-hooks.ts openclaw-patched/src/hooks/internal-hooks.ts
---- openclaw-src/src/hooks/internal-hooks.ts	2026-02-03 21:32:24.182261166 +0100
-+++ openclaw-patched/src/hooks/internal-hooks.ts	2026-02-03 21:43:03.042500613 +0100
-@@ -8,7 +8,7 @@
- import type { WorkspaceBootstrapFile } from "../agents/workspace.js";
- import type { OpenClawConfig } from "../config/config.js";
- 
--export type InternalHookEventType = "command" | "session" | "agent" | "gateway";
-+export type InternalHookEventType = "command" | "session" | "agent" | "gateway" | "workspace";
- 
- export type AgentBootstrapHookContext = {
-   workspaceDir: string;

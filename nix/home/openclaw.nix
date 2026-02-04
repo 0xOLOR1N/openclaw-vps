@@ -9,7 +9,7 @@
 
 let
   # TODO: remove once https://github.com/openclaw/openclaw/issues/8255 fixed
-  # Patch the official nix-openclaw package with our workspace:write hook
+  # Patch the official nix-openclaw package with our workspace postWrite hooks
   openclawPkg = nix-openclaw.packages.${pkgs.system}.openclaw-gateway.overrideAttrs (old: {
     patches = (old.patches or [ ]) ++ [
       ../../patches/openclaw-workspace-write-hook.patch
@@ -52,6 +52,55 @@ let
     ${pkgs.coreutils}/bin/chmod 600 "$tmp"
     ${pkgs.coreutils}/bin/mv "$tmp" "$cfg"
   '';
+
+  # TODO: remove after https://github.com/openclaw/openclaw/issues/8255 fixed
+  # Shell script hook for workspace postWrite events
+  postWriteHookScript = pkgs.writeShellScript "openclaw-post-write-hook" ''
+    #!/usr/bin/env bash
+    FILE_PATH="$1"
+    OPERATION="$2"
+
+    LOG_FILE="/var/lib/openclaw/workspace-writes.log"
+    TIMESTAMP=$(${pkgs.coreutils}/bin/date -Iseconds)
+
+    echo "$TIMESTAMP $OPERATION $FILE_PATH" >> "$LOG_FILE"
+  '';
+
+  # Generate minimal documents directory for openclaw (required by nix-openclaw module)
+  # These are placeholder files - actual content is managed on the VPS
+  documentsDir = pkgs.symlinkJoin {
+    name = "openclaw-documents";
+    paths = [
+      (pkgs.writeTextDir "AGENTS.md" "# Agents Configuration\nDefault agent configuration.\n")
+      (pkgs.writeTextDir "SOUL.md" "# Soul Configuration\nYou are a helpful AI assistant.\n")
+      (pkgs.writeTextDir "TOOLS.md" "# Tools Configuration\nDefault tools configuration.\n")
+    ];
+  };
+
+  # TODO: remove after https://github.com/openclaw/openclaw/issues/8255 fixed
+  # Inject workspace.hooks.postWrite config (HM module schema doesn't have this option yet)
+  injectWorkspaceHooks = pkgs.writeShellScript "openclaw-inject-workspace-hooks" ''
+    set -euo pipefail
+
+    cfg="${openclawJson}"
+
+    if [ ! -f "$cfg" ]; then
+      echo "[openclaw-inject-hooks] Config file not found, skipping injection"
+      exit 0
+    fi
+
+    echo "[openclaw-inject-hooks] Injecting workspace.hooks.postWrite config"
+    tmp="$(${pkgs.coreutils}/bin/mktemp)"
+    ${pkgs.jq}/bin/jq '.workspace.hooks.postWrite = [
+      {
+        "command": "${postWriteHookScript}",
+        "args": ["${"$"}{filePath}", "${"$"}{operation}", "${"$"}{workspaceRoot}"],
+        "timeout": 30000
+      }
+    ]' "$cfg" > "$tmp"
+    ${pkgs.coreutils}/bin/chmod 600 "$tmp"
+    ${pkgs.coreutils}/bin/mv "$tmp" "$cfg"
+  '';
 in
 {
   imports = [
@@ -66,35 +115,9 @@ in
   # Use sd-switch for headless servers (handles missing D-Bus session)
   systemd.user.startServices = "sd-switch";
 
-  # Add memory files (nix-openclaw only handles top-level .md files)
-  home.file.".openclaw/workspace/memory" = {
-    source = ../../state/.openclaw/memory;
-    recursive = true;
-  };
-
-  # TODO: remove after https://github.com/openclaw/openclaw/issues/8255 fixed
-  # Hook handler for workspace:write events
-  home.file."hooks/on-workspace-write.js".text = ''
-    import { appendFile } from "fs/promises";
-
-    const LOG_FILE = "/var/lib/openclaw/workspace-writes.log";
-
-    export default async function onWorkspaceWrite(event) {
-      const { operation, tool, paths, workspaceRoot } = event.context;
-      const timestamp = new Date().toISOString();
-      
-      const logLine = JSON.stringify({ timestamp, operation, paths }) + "\n";
-      await appendFile(LOG_FILE, logLine).catch(() => {});
-      
-      console.log(`[workspace:write] ''${operation}: ''${paths.join(", ")}`);
-    }
-  '';
-
   programs.openclaw = {
-    # TODO: refactor to fetch from git private repo or similar
-    # Use instances mode (simple mode has a bug with unitName)
-    # Seed workspace with initial documents (IDENTITY.md, SOUL.md, etc.)
-    documents = ../../state/.openclaw;
+    # Use generated minimal documents (actual content managed on VPS)
+    documents = documentsDir;
 
     instances.default = {
       enable = true;
@@ -137,18 +160,6 @@ in
         };
 
         messages.ackReactionScope = "group-mentions";
-
-        # TODO: remove after https://github.com/openclaw/openclaw/issues/8255 fixed
-        # Enable workspace:write hook (requires patched package)
-        hooks.internal = {
-          enabled = true;
-          handlers = [
-            {
-              event = "workspace:write";
-              module = "/var/lib/openclaw/hooks/on-workspace-write.js";
-            }
-          ];
-        };
       };
     };
   };
@@ -167,9 +178,12 @@ in
         "LOG_LEVEL=debug"
       ];
 
-      # Inject telegram allowFrom from secret just before start
+      # Inject config values from secrets/patches just before start
       # mkAfter ensures we don't clobber any upstream ExecStartPre
-      ExecStartPre = lib.mkAfter [ "${injectTelegramAllowFrom}" ];
+      ExecStartPre = lib.mkAfter [
+        "${injectTelegramAllowFrom}"
+        "${injectWorkspaceHooks}"
+      ];
     };
 
     # FIXME: check if it's needed
