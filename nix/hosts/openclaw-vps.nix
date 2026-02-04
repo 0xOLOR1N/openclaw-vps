@@ -3,6 +3,15 @@
   nix-openclaw,
   ...
 }:
+
+let
+  # Single source of truth for openclaw user - passed to HM via extraSpecialArgs
+  openclawUser = {
+    name = "openclaw";
+    home = "/var/lib/openclaw";
+    uid = 1000;
+  };
+in
 {
   imports = [
     ./hardware-configuration.nix
@@ -24,44 +33,49 @@
     secrets = {
       anthropic-api = {
         rekeyFile = ../../secrets/anthropic-api.age;
-        owner = "openclaw";
-        group = "openclaw";
+        owner = openclawUser.name;
+        group = openclawUser.name;
+      };
+      gandalf-api = {
+        rekeyFile = ../../secrets/gandalf.age;
+        owner = openclawUser.name;
+        group = openclawUser.name;
       };
       telegram-creds = {
         rekeyFile = ../../secrets/telegram-creds.age;
-        owner = "openclaw";
-        group = "openclaw";
+        owner = openclawUser.name;
+        group = openclawUser.name;
       };
       telegram-user-id = {
         rekeyFile = ../../secrets/telegram-user-id.age;
-        owner = "openclaw";
-        group = "openclaw";
+        owner = openclawUser.name;
+        group = openclawUser.name;
       };
       gateway-token = {
         rekeyFile = ../../secrets/gateway-token.age;
-        owner = "openclaw";
-        group = "openclaw";
+        owner = openclawUser.name;
+        group = openclawUser.name;
       };
     };
   };
 
-  users.groups.openclaw = { };
+  users.groups.${openclawUser.name} = { };
 
-  users.users.openclaw = {
+  users.users.${openclawUser.name} = {
     isNormalUser = true;
-    group = "openclaw";
-    home = "/var/lib/openclaw";
+    group = openclawUser.name;
+    home = openclawUser.home;
     createHome = true;
-    uid = 1000;
+    uid = openclawUser.uid;
     linger = true;
   };
 
   home-manager = {
     useGlobalPkgs = true;
     useUserPackages = true;
-    extraSpecialArgs = { inherit nix-openclaw; };
+    extraSpecialArgs = { inherit nix-openclaw openclawUser; };
     backupFileExtension = "bak";
-    users.openclaw = import ../home/openclaw.nix;
+    users.${openclawUser.name} = import ../home;
   };
 
   users.users.root.openssh.authorizedKeys.keyFiles = [

@@ -106,6 +106,8 @@
         {
           # Tell agenix-rekey where to find the hosts
           agenix-rekey.nixosConfigurations = self.nixosConfigurations;
+          # Use age instead of rage (rage has issues with age-plugin-tpm)
+          agenix-rekey.agePackage = pkgs.age;
 
           devshells.default = {
             name = "openclaw-infra";
